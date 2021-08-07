@@ -1,0 +1,172 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description:  >-
+    This template creates a VPC infrastructure with two Juice Shop web servers behind an Application Load Balancer 
+    and CloudFront. It also deploys an additional CloudFront Distribution for later part of the workshop. (saws-5sa6ptnl)
+Metadata:
+  Version: '1.1.3'
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: 'Provisioning of required components, leave it at the default setting unless specific ones are required'
+      Parameters:
+      - AMIforWebServers
+      - VPCCIDR
+      - PublicSubnet1CIDR
+      - PublicSubnet2CIDR
+      - AllowedPublicRange
+      - OpenWebPort
+    ParameterLabels:
+      AMIforWebServers:
+        default: AMI for web servers
+        Description: Must be a Linux2 AMI
+      VPCCIDR:
+        default: VPC CIDR
+        Description: VPC CIDR
+      PublicSubnet1CIDR:
+        default: First Subnet
+        Description: First subnet CIDR block
+      PublicSubnet2CIDR:
+        default: Second Subnet
+        Description: Second subnet CIDR block
+      OpenWebPort:
+        default: Web Port
+        Description: Port our web application is listening on
+      AllowedPublicRange:
+        default: Allowed public IPs
+        Description: Public IPs to whitelist, normally it's public range or IPs
+Parameters:
+  AMIforWebServers:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn-ami-hvm-x86_64-gp2
+  AllowedPublicRange:
+    Description: Public IPs to whitelist
+    Type: String
+    Default: 0.0.0.0/0
+  VPCCIDR:
+    Description: VPC CIDR range we will use for components of the workshop
+    Default: 10.10.0.0/16
+    Type: String
+  PublicSubnet1CIDR:
+    Description: First subnet CIDR
+    Default: 10.10.1.0/24
+    Type: String
+  PublicSubnet2CIDR:
+    Description: Second subnet CIDR
+    Default: 10.10.2.0/24
+    Type: String
+  OpenWebPort:
+    Description: Port our application is listening on
+    Default: 80
+    Type: Number
+Resources:
+#Network stack  
+  NetworkStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        VPCCIDR:
+          Ref: VPCCIDR
+        PublicSubnet1CIDR:
+          Ref: PublicSubnet1CIDR
+        PublicSubnet2CIDR:
+          Ref: PublicSubnet2CIDR
+        AllowedPublicRange:
+          Ref: AllowedPublicRange
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Sub: ${AWS::StackName}-VPC
+      TemplateURL: https://ddos-protection-best-practices-workshop-assets.s3.amazonaws.com/templates/NetworkStack.template
+      TimeoutInMinutes: 5
+#Security stack   
+  SecurityStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        AllowedPublicRange:
+          Ref: AllowedPublicRange
+        OpenWebPort:
+          Ref: OpenWebPort
+        WorkShopVPCID:
+          Fn::GetAtt:
+          - NetworkStack
+          - Outputs.VpcId
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Sub: ${AWS::StackName}-SecurityGroup
+      TemplateURL: https://ddos-protection-best-practices-workshop-assets.s3.amazonaws.com/templates/SecurityStack.template
+      TimeoutInMinutes: 5
+#Instance stack  
+  InstanceStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        AMIforWebServers:
+          Ref: AMIforWebServers
+        WebSecurityGroup:
+          Fn::GetAtt:
+          - SecurityStack
+          - Outputs.WebSecurityGroup
+        OpenWebPort:
+          Ref: OpenWebPort
+        ALBSecurityGroup:
+          Fn::GetAtt:
+          - SecurityStack
+          - Outputs.ALBSecurityGroup
+        FirstSubnetID:
+          Fn::GetAtt:
+          - NetworkStack
+          - Outputs.WorkShopFirstSubnetID
+        WorkShopVPCID:
+          Fn::GetAtt:
+          - NetworkStack
+          - Outputs.VpcId
+        SecondSubnetID:
+          Fn::GetAtt:
+          - NetworkStack
+          - Outputs.WorkShopSecondSubnetID
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Sub: ${AWS::StackName}-ASG
+      TemplateURL: https://ddos-protection-best-practices-workshop-assets.s3.amazonaws.com/templates/InstanceStack.template
+      TimeoutInMinutes: 10
+#CloudFront for FMS excercise
+  NewAPIEndpoint:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Origins:
+        - DomainName: httpbin.org
+          Id: myCustomOrigin
+          CustomOriginConfig:
+            HTTPPort: '80'
+            HTTPSPort: '443'
+            OriginProtocolPolicy: http-only
+        Enabled: 'true'
+        Comment: 'New API Endpoint'
+        DefaultCacheBehavior:
+          TargetOriginId: myCustomOrigin
+          SmoothStreaming: 'false'
+          ForwardedValues:
+            QueryString: 'false'
+            Cookies:
+              Forward: all
+          ViewerProtocolPolicy: allow-all
+        PriceClass: PriceClass_All
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: 'true'
+Outputs:
+  JuiceShopURL:
+    Value:
+      Fn::GetAtt:
+      - InstanceStack
+      - Outputs.SiteURL
+  WorkshopLoadBalancer:
+    Value:
+      Fn::GetAtt:
+      - InstanceStack
+      - Outputs.WorkshopLoadBalancer
+  NewAPIEndpoint:
+    Value: !GetAtt NewAPIEndpoint.DomainName
